@@ -511,23 +511,67 @@ procdump(void)
   [RUNNING]   "run   ",
   [ZOMBIE]    "zombie"
   };
-  int i;
+  int i, pdir_i, ptbl_i;
   struct proc *p;
   char *state;
   uint pc[10];
+  pte_t *pdir, *ptbl, pte, vpte, ppn, vpn;
 
-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
     if(p->state == UNUSED)
       continue;
     if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
       state = states[p->state];
     else
       state = "???";
-    cprintf("%d %s %s", p->pid, state, p->name);
+    cprintf("PID:%d STATE:%s NAME:%s\n", p->pid, state, p->name);
     if(p->state == SLEEPING){
       getcallerpcs((uint*)p->context->ebp+2, pc);
+      cprintf("CALLERS:");
       for(i=0; i<10 && pc[i] != 0; i++)
         cprintf(" %p", pc[i]);
+    }
+
+    // The page directory is already present in the proc struct as p->pgdir field
+    pdir = p->pgdir;
+    cprintf("\nPage Tables:\n  Memory location of page directory = %p\n", V2P(pdir));
+    for (pdir_i = 0; pdir_i < NPDENTRIES; pdir_i++) {
+	pte = pdir[pdir_i];
+	ppn = pdir[pdir_i] >> 12;
+
+	// If pdir PTE is present, has user permissions, and has
+	// been accessed, show PPN and memory location of PTE
+	if ((PTE_FLAGS(pte) & PTE_P) && (PTE_FLAGS(pte) & PTE_U) && (PTE_FLAGS(pte) & PTE_A)) {
+	   cprintf("  pdir PTE %d, %p:\n", pdir_i, ppn);
+	   
+	   // Calculate virtual address of current PTE to access the page table
+	   ptbl = (pte_t*)P2V(PTE_ADDR(pte));
+	   cprintf("    Memory location of page table = %p\n", V2P(ptbl));
+	   for (ptbl_i = 0; ptbl_i < NPTENTRIES; ptbl_i++) {
+	       vpte = ptbl[ptbl_i];
+	       vpn = ptbl[ptbl_i] >> 12;
+
+	       // Check for the same flags as the pdir PTE's on the current ptbl PTE (P,U,A)
+	       if ((PTE_FLAGS(vpte) & PTE_P) && (PTE_FLAGS(vpte) & PTE_U) && (PTE_FLAGS(vpte) & PTE_A)) {
+		   cprintf("    ptbl PTE %d, %p, %p\n", ptbl_i, vpn, PTE_ADDR(vpte));
+	       }
+	   }
+	}
+    }
+
+    // Sweep the pdir again to gather the mappings
+    cprintf("Page Mappings (VPN -> PPN):\n");
+    for (pdir_i = 0; pdir_i < NPDENTRIES; pdir_i++){
+    	pte = pdir[pdir_i];	
+	if ((PTE_FLAGS(pte) & PTE_P) && (PTE_FLAGS(pte) & PTE_U) && (PTE_FLAGS(pte) & PTE_A)){
+	   ptbl = (pte_t*)P2V(PTE_ADDR(pte));
+	   for (ptbl_i = 0; ptbl_i < NPTENTRIES; ptbl_i++){
+	       vpte = ptbl[ptbl_i];
+	       if ((PTE_FLAGS(vpte) & PTE_P) && (PTE_FLAGS(vpte) & PTE_U) && (PTE_FLAGS(vpte) & PTE_A)){
+	          cprintf("  %p -> %p\n", vpte >> 12, pte >> 12);
+	       }
+	   }
+	}
     }
     cprintf("\n");
   }
