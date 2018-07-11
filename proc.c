@@ -553,7 +553,7 @@ procdump(void)
 
 	       // Check for the same flags as the pdir PTE's on the current ptbl PTE (P,U,A)
 	       if ((PTE_FLAGS(vpte) & PTE_P) && (PTE_FLAGS(vpte) & PTE_U) && (PTE_FLAGS(vpte) & PTE_A)) {
-		   cprintf("    ptbl PTE %d, %p, %p\n", ptbl_i, vpn, PTE_ADDR(vpte));
+		   cprintf("    ptbl PTE %d, %p, %p\n", ptbl_i, vpn, vpte);
 	       }
 	   }
 	}

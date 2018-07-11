@@ -91,9 +91,12 @@ trap(struct trapframe *tf)
             "eip 0x%x addr 0x%x--kill proc\n",
             myproc()->pid, myproc()->name, tf->trapno,
             tf->err, cpuid(), tf->eip, rcr2());
+    if (!rcr2()) {
+      cprintf("error: attempt of accessing address 0x0, process was killed\n");
+    }
     myproc()->killed = 1;
   }
-
+  
   // Force process exit if it has been killed and is in user space.
   // (If it is still executing in the kernel, let it keep running
   // until it gets to the regular system call return.)
