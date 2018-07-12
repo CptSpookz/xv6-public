@@ -195,9 +195,9 @@ inituvm(pde_t *pgdir, char *init, uint sz)
 // Load a program segment into pgdir.  addr must be page-aligned
 // and the pages from addr to addr+sz must already be mapped.
 int
-loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
+loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz, uint flags)
 {
-  uint i, pa, n;
+  uint i, pa, n, w;
   pte_t *pte;
 
   if((uint) addr % PGSIZE != 0)
@@ -206,6 +206,11 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
     if((pte = walkpgdir(pgdir, addr+i, 0)) == 0)
       panic("loaduvm: address should exist");
     pa = PTE_ADDR(*pte);
+    w = flags & PTE_W; // Checks the PTE_W flag state in the process flags
+    if (w) // If writeable, activate the flag in the PTE
+      *pte |= PTE_W;
+    else // If it isn't, leave it in read-only mode
+      *pte &= ~PTE_W;
     if(sz - i < PGSIZE)
       n = sz - i;
     else
@@ -329,7 +334,7 @@ copyuvm(pde_t *pgdir, uint sz)
     if(!(*pte & PTE_P))
       panic("copyuvm: page not present");
     pa = PTE_ADDR(*pte);
-    flags = PTE_FLAGS(*pte);
+    flags = PTE_FLAGS(*pte); 
     if((mem = kalloc()) == 0)
       goto bad;
     memmove(mem, (char*)P2V(pa), PGSIZE);

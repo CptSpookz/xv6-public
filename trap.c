@@ -91,9 +91,10 @@ trap(struct trapframe *tf)
             "eip 0x%x addr 0x%x--kill proc\n",
             myproc()->pid, myproc()->name, tf->trapno,
             tf->err, cpuid(), tf->eip, rcr2());
-    if (!rcr2()) {
+    if (!rcr2())
       cprintf("error: attempt of accessing address 0x0, process was killed\n");
-    }
+    if (tf->err == 7)
+      cprintf("error: attempt of writing on read-only page, process was killed\n");
     myproc()->killed = 1;
   }
   

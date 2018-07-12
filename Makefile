@@ -138,15 +138,16 @@ vectors.S: vectors.pl
 
 ULIB = ulib.o usys.o printf.o umalloc.o
 # Load processes beginning in page 1 (PGSIZE == 0x1000)
+# Also set option -n so that the pages aren't automatically write-enabled
 _%: %.o $(ULIB)
-	$(LD) $(LDFLAGS) -N -e main -Ttext 0x1000 -o $@ $^
+	$(LD) $(LDFLAGS) -n -e main -Ttext 0x1000 -o $@ $^
 	$(OBJDUMP) -S $@ > $*.asm
 	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $*.sym
 
 _forktest: forktest.o $(ULIB)
 	# forktest has less library code linked in - needs to be small
 	# in order to be able to max out the proc table.
-	$(LD) $(LDFLAGS) -N -e main -Ttext 1000 -o _forktest forktest.o ulib.o usys.o
+	$(LD) $(LDFLAGS) -n -e main -Ttext 1000 -o _forktest forktest.o ulib.o usys.o
 	$(OBJDUMP) -S _forktest > forktest.asm
 
 mkfs: mkfs.c fs.h
@@ -175,6 +176,7 @@ UPROGS=\
 	_wc\
 	_zombie\
 	_nullptr\
+	_read-only\
 
 fs.img: mkfs README $(UPROGS)
 	./mkfs fs.img README $(UPROGS)
@@ -243,7 +245,7 @@ qemu-nox-gdb: fs.img xv6.img .gdbinit
 
 EXTRA=\
 	mkfs.c ulib.c user.h cat.c echo.c forktest.c grep.c kill.c\
-	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c zombie.c nullptr.c\
+	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c zombie.c nullptr.c read-only.c\
 	printf.c umalloc.c\
 	README dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\
 	.gdbinit.tmpl gdbutil\
