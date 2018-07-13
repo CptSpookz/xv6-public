@@ -348,6 +348,117 @@ bad:
   return 0;
 }
 
+// Tratamento de exceção, para erros em paginação/memoria da TASK 4
+handle_pgflt(void)
+{
+  char *mem;
+  pte_t *pte;
+  uint pa;
+  
+  uint faultingAddress = read_cr2();
+
+  // Tratamento de exceção para NULL pointer
+  if (faultingAddress==0) {
+    cprintf("NULL POINTER EXCEPTION! kill&exit\n");
+    proc->killed = 1;
+    exit();
+  }
+  
+  if ((pte = walkpgdir(proc->pgdir, (void*)faultingAddress , 0)) == 0)
+    panic("handle_pgflt: pte should exist");
+  if(!(*pte & PTE_P))
+      panic("handle_pgflt: page not present");
+  
+  pa = PTE_ADDR(*pte);
+
+  acquire(&num_of_shareslock);
+  
+  // Primeiro caso, um processo que entra e é o ultimo processo que compartilha essa pagina
+  if ((num_of_shares[pa/PGSIZE] == 0) && ((*pte)& PTE_WAS_WRITABLE)) {
+    *pte &= ~PTE_SH;  // Processo deixou de ser compartilhado
+    *pte &= ~PTE_WAS_WRITABLE;  // não precisamos dessa flag auxiliar podemos usar a flag PTE_W
+    *pte |= PTE_W;  // Atualiza o processo para poder ser escrito 
+    goto finish_hadle_pgflt;
+  }
+  
+  // Segundo caso, algum processo não compartilha mais a paginação
+  if ((num_of_shares[pa/PGSIZE] > 0) && ((*pte)&PTE_WAS_WRITABLE) && ((*pte)&PTE_SH)) {
+    num_of_shares[pa >> PGSHIFT]--;  // Atualização do contador
+    if((mem = kalloc()) == 0)   // Alocamos memória
+      panic("handle_pgflt: failed to kalloc");
+    memmove(mem, (char*)p2v(pa), PGSIZE);  // movemos o processo para area alocada
+    *pte &= ~PTE_SH;  // Remove a FLAG de paginação comapritlhada
+    *pte &= ~PTE_WAS_WRITABLE;  // FLAG auxiliar não é mais necessária podemos remover
+    *pte = (*pte & 0XFFF) | v2p(mem) | PTE_W; // Atualizamos a entry e a FLAG de escrita do processo
+    goto finish_hadle_pgflt;
+  }
+  
+  // Terceiro caso um processo tenta escrever em uma are originalmente somente leitura (read-only)
+  if (!((*pte)&PTE_WAS_WRITABLE)) {
+      cprintf("ACCESS VIOLATION! tried to write to read-only page. kill&exit\n");
+      release(&num_of_shareslock);
+      proc->killed = 1;
+      exit(); 
+  }
+
+  
+finish_hadle_pgflt:
+  release(&num_of_shareslock);
+  flush_tlb_all();
+}
+
+// Dado um processo pai, compartilha a area de memória com o filho
+// Parecido com o copyuvm_cow
+pde_t*
+copyuvm_cow(pde_t *pgdir, uint sz) {
+  pde_t *d;
+  pte_t *pte;
+  uint i, pa, flags;
+  
+  if((d = setupkvm()) == 0)
+    return 0;
+
+  for(i = PGSIZE; i < sz; i += PGSIZE) {
+    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+      panic("copyuvm_cow: pte should exist");
+    if(!(*pte & PTE_P))
+      panic("copyuvm_cow: page not present");
+   
+    pa = PTE_ADDR(*pte);
+    
+    // Aumentamos o contador de compartilhamento, utilizamos semaforo pois outros processos podem estar
+    // tentando fazer um compartilhameto da paginação
+    acquire(&num_of_shareslock);
+    num_of_shares[pa/PGSIZE]++;
+    release(&num_of_shareslock);
+    
+
+    flags =  *pte & 0xfff;
+    if ((flags & PTE_W ) | (flags & PTE_WAS_WRITABLE)) {
+      flags &= ~PTE_W;        // Removemos a flag de escrita
+      flags |= PTE_SH ;     // Adicionamos as flags e compartilhamento
+      flags |= PTE_WAS_WRITABLE;    // Adicionamos a flag auxilar para identificar se o processo podia ser escrito
+      if (mappages(d, (void*)i, PGSIZE, pa, flags) < 0)
+        goto bad;
+    } else {
+      flags |= PTE_SH;      // Adicionamos as flags e compartilhamento 
+      if (mappages(d, (void*)i, PGSIZE, pa, flags) < 0)
+        goto bad;
+    }
+    
+    // update flags
+    *pte = (*pte & ~0xfff) | flags; 
+     
+  }
+  
+  flush_tlb_all();
+  return d;
+
+bad:
+  freevm(d);
+  return 0;
+}
+
 //PAGEBREAK!
 // Map user virtual address to kernel address.
 char*
