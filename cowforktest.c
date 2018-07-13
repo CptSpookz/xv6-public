@@ -10,9 +10,10 @@ void cowforktest()
   printf(1, "CowFork TESTE\n");
 
   pid = cowfork();
-
+  
   if(pid==0){
     printf(1,"filho funcionando \n");
+    exit();
   }
   else{
     printf(1,"pai funcionando \n");
@@ -21,7 +22,7 @@ void cowforktest()
   while (1);
 }
 
-int main(int argc, char const *argv[]) {
+int main() {
   cowforktest();
   exit();
 }

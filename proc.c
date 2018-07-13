@@ -229,33 +229,38 @@ cowfork(void)
 {
   int i, pid;
   struct proc *np;
+  struct proc *curr = myproc();
 
   // Allocate process.
   if((np = allocproc()) == 0)
     return -1;
 
   // Copy process state from p.
-  if((np->pgdir = copyuvm_cow(proc->pgdir, proc->sz)) == 0){ // copyum_cow faz o compartilhamento de paginação
+  if((np->pgdir = copyuvm_cow(curr->pgdir, curr->sz)) == 0){ // copyum_cow faz o compartilhamento de paginação
     kfree(np->kstack);
     np->kstack = 0;
     np->state = UNUSED;
     return -1;
   }
-  np->sz = proc->sz;
-  np->parent = proc;
-  *np->tf = *proc->tf;
+  np->sz = curr->sz;
+  np->parent = curr;
+  *np->tf = *curr->tf;
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
 
   for(i = 0; i < NOFILE; i++)
-    if(proc->ofile[i])
-      np->ofile[i] = filedup(proc->ofile[i]);
-  np->cwd = idup(proc->cwd);
+    if(curr->ofile[i])
+      np->ofile[i] = filedup(curr->ofile[i]);
+  np->cwd = idup(curr->cwd);
  
   pid = np->pid;
+
+  acquire(&ptable.lock);
   np->state = RUNNABLE;
-  safestrcpy(np->name, proc->name, sizeof(proc->name));
+  release(&ptable.lock);
+
+  safestrcpy(np->name, curr->name, sizeof(curr->name));
   return pid;
 }
 

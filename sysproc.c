@@ -37,6 +37,12 @@ sys_kill(void)
 }
 
 int
+sys_cowfork(void)
+{
+  return cowfork();
+}
+
+int
 sys_getpid(void)
 {
   return myproc()->pid;

@@ -30,3 +30,10 @@ trapret:
   popl %ds
   addl $0x8, %esp  # trapno and errcode
   iret
+
+  # Flushes the TLB
+.globl flshtlb
+flshtlb:
+  movl %eax, %cr3
+  movl %cr3, %eax
+  ret
