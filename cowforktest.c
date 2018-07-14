@@ -2,8 +2,6 @@
 #include "stat.h"
 #include "user.h"
 
-#define NUM  2
-
 void cowforktest()
 {
   int pid;

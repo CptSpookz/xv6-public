@@ -236,7 +236,8 @@ cowfork(void)
     return -1;
 
   // Copy process state from p.
-  if((np->pgdir = copyuvm_cow(curr->pgdir, curr->sz)) == 0){ // copyum_cow faz o compartilhamento de paginação
+  // Share current pages with share_cow
+  if((np->pgdir = share_cow(curr->pgdir, curr->sz)) == 0){
     kfree(np->kstack);
     np->kstack = 0;
     np->state = UNUSED;
@@ -249,18 +250,22 @@ cowfork(void)
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
 
+  // Enable shared memory flag on both processes
+  curr->shared = 1;
+  np->shared = 1;
+
   for(i = 0; i < NOFILE; i++)
     if(curr->ofile[i])
       np->ofile[i] = filedup(curr->ofile[i]);
   np->cwd = idup(curr->cwd);
  
+  safestrcpy(np->name, curr->name, sizeof(curr->name));
   pid = np->pid;
 
   acquire(&ptable.lock);
   np->state = RUNNABLE;
   release(&ptable.lock);
 
-  safestrcpy(np->name, curr->name, sizeof(curr->name));
   return pid;
 }
 
@@ -332,8 +337,14 @@ wait(void)
         // Found one.
         pid = p->pid;
         kfree(p->kstack);
-        p->kstack = 0;
-        freevm(p->pgdir);
+	p->kstack = 0;
+	// If process memory is not shared, free as usual
+	if (p->shared == 0){
+	   freevm(p->pgdir);
+	} else { // If it's not, do the copy-on-write free
+	   freevm_cow(p->pgdir);
+	   p->shared = 0;
+	}
         p->pid = 0;
         p->parent = 0;
         p->name[0] = 0;

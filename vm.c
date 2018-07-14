@@ -8,10 +8,46 @@
 #include "elf.h"
 #include "spinlock.h"
 
+#define SHARETABLESZ PHYSTOP >> 12
+static int sharetable[SHARETABLESZ]; // counter for the number of shares per page
+struct spinlock sharelock; // lock for shared pages access
+
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
-struct spinlock n_shares_lock; // lock for shared pages access
-uchar n_shares[PHYSTOP/PGSIZE]; // counter for the number of shares per page
+
+void
+sharetableinit(void)
+{
+  initlock(&sharelock, "shareLock");
+  int i;
+  
+  acquire(&sharelock);
+  for(i=0; i<SHARETABLESZ; i++) sharetable[i] = 0;
+  release(&sharelock);
+
+  cprintf("sharetable initialized successfully\n");
+}
+
+int
+getCountPPN(uint pa)
+{
+  int i = (pa >> 12) & 0xFFFF; // Calculate pa's PPN
+  return sharetable[i];
+}
+
+void
+incCountPPN(uint pa)
+{
+  int i = (pa >> 12) & 0xFFFF;
+  sharetable[i]++;
+}
+
+void
+decCountPPN(uint pa)
+{
+  int i = (pa >> 12) & 0xFFFF;
+  sharetable[i]++;
+}
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -30,8 +66,6 @@ seginit(void)
   c->gdt[SEG_UCODE] = SEG(STA_X|STA_R, 0, 0xffffffff, DPL_USER);
   c->gdt[SEG_UDATA] = SEG(STA_W, 0, 0xffffffff, DPL_USER);
   lgdt(c->gdt, sizeof(c->gdt));
-
-  initlock(&n_shares_lock, "numOfShares");
 }
 
 // Return the address of the PTE in page table pgdir
@@ -353,117 +387,6 @@ bad:
   return 0;
 }
 
-// Tratamento de exceção para erros em paginação/memoria do COWFork
-void
-handle_pgflt(void)
-{
-  char *mem;
-  pte_t *pte;
-  uint pa;
-  struct proc *curr = myproc();
-  uint faultingAddress = rcr2();
-
-  // Tratamento de exceção para NULL pointer
-  if (faultingAddress==0) {
-    cprintf("error: attempt of accessing address 0x0, process was killed\n");
-    curr->killed = 1;
-    exit();
-  }
-  
-  if ((pte = walkpgdir(curr->pgdir, (void*)faultingAddress , 0)) == 0)
-    panic("handle_pgflt: pte should exist");
-  if(!(*pte & PTE_P))
-    panic("handle_pgflt: page not present");
-  
-  pa = PTE_ADDR(*pte);
-
-  acquire(&n_shares_lock);
-  
-  // Primeiro caso, um processo que entra e é o ultimo processo que compartilha essa pagina
-  if ((n_shares[pa/PGSIZE] == 0) && ((*pte)& PTE_WAS_WRITABLE)) {
-    *pte &= ~PTE_SH;  // Processo deixou de ser compartilhado
-    *pte &= ~PTE_WAS_WRITABLE;  // não precisamos dessa flag auxiliar podemos usar a flag PTE_W
-    *pte |= PTE_W;  // Atualiza o processo para poder ser escrito 
-    goto finish_handle_pgflt;
-  }
-  
-  // Segundo caso, algum processo não compartilha mais a paginação
-  if ((n_shares[pa/PGSIZE] > 0) && ((*pte)&PTE_WAS_WRITABLE) && ((*pte)&PTE_SH)) {
-    n_shares[pa >> PGSHIFT]--;  // Atualização do contador
-    if((mem = kalloc()) == 0)   // Alocamos memória
-      panic("handle_pgflt: failed to kalloc");
-    memmove(mem, (char*)P2V(pa), PGSIZE);  // movemos o processo para area alocada
-    *pte &= ~PTE_SH;  // Remove a FLAG de paginação comapritlhada
-    *pte &= ~PTE_WAS_WRITABLE;  // FLAG auxiliar não é mais necessária podemos remover
-    *pte = PTE_FLAGS(*pte) | V2P(mem) | PTE_W; // Atualizamos a entry e a FLAG de escrita do processo
-    goto finish_handle_pgflt;
-  }
-  
-  // Terceiro caso: um processo tenta escrever em uma área originalmente somente leitura (read-only)
-  if (!((*pte)&PTE_WAS_WRITABLE)) {
-      cprintf("error: attempt of writing on read-only page, process was killed\n");
-      release(&n_shares_lock);
-      curr->killed = 1;
-      exit(); 
-  }
-
-  
-finish_handle_pgflt:
-  release(&n_shares_lock);
-  flshtlb();
-}
-
-// Dado um processo pai, compartilha a area de memória com o filho
-pde_t*
-copyuvm_cow(pde_t *pgdir, uint sz) {
-  pde_t *d;
-  pte_t *pte;
-  uint i, pa, flags;
-
-  if((d = setupkvm()) == 0)
-    return 0;
-
-  for(i = PGSIZE; i < sz; i += PGSIZE) {
-    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
-      panic("copyuvm_cow: pte should exist");
-    if(!(*pte & PTE_P))
-      panic("copyuvm_cow: page not present");
-   
-    pa = PTE_ADDR(*pte);
-    
-    // Aumentamos o contador de compartilhamento, utilizamos semaforo pois outros processos podem estar
-    // tentando fazer um compartilhamento da paginação
-    acquire(&n_shares_lock);
-    n_shares[pa/PGSIZE]++;
-    release(&n_shares_lock);
-    
-
-    flags =  PTE_FLAGS(*pte);
-    if ((flags & PTE_W ) | (flags & PTE_WAS_WRITABLE)) {
-      flags &= ~PTE_W;		// Removemos a flag de escrita
-      flags |= PTE_SH ;		// Adicionamos a flags de compartilhamento
-      flags |= PTE_WAS_WRITABLE;// Adicionamos a flag auxilar para identificar se o processo podia ser escrito
-      if (mappages(d, (void*)i, PGSIZE, pa, flags) < 0)
-        goto bad;
-    } else {
-      flags |= PTE_SH;      	// Adicionamos a flags de compartilhamento 
-      if (mappages(d, (void*)i, PGSIZE, pa, flags) < 0)
-        goto bad;
-    }
-    
-    // update flags
-    *pte = PTE_FLAGS(*pte) | flags; 
-     
-  }
-  
-  flshtlb();
-  return d;
-
-bad:
-  freevm(d);
-  return 0;
-}
-
 //PAGEBREAK!
 // Map user virtual address to kernel address.
 char*
@@ -512,3 +435,153 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
 //PAGEBREAK!
 // Blank page.
 
+pde_t* 
+share_cow(pde_t* pgdir, uint sz)
+{
+  pde_t *d;
+  pte_t* pte;
+  uint pa, i, flags;
+  
+  if((d = setupkvm()) == 0)
+    return 0;
+
+  acquire(&sharelock);
+  for(i = PGSIZE; i < sz; i += PGSIZE){
+    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+      panic("copyuvm: pte should exist");
+    if(!(*pte & PTE_P))
+      panic("copyuvm: page not present");
+    *pte &= ~PTE_W; // Turns page read-only
+    *pte |= PTE_SH; // Activates shared memory flag
+    pa = PTE_ADDR(*pte);
+    flags = PTE_FLAGS(*pte);
+
+    // Instead of creating new pages, remap the pages for cow child
+    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0)
+      goto bad;
+
+    if(getCountPPN(pa) == 0){
+      incCountPPN(pa);
+      incCountPPN(pa);
+    }
+    else{
+      incCountPPN(pa);
+    }
+  }
+  release(&sharelock);
+
+  flshtlb(); // Flushes the TLB
+
+  return d;
+
+bad:
+  freevm(d);
+  return 0;
+}
+
+void handle_pgflt(void){
+  // Recupera o endereço virtual onde ocorreu o pagefault (armazenado no registrador cr2)
+  uint addr = rcr2();
+  // Se o endereço que tentou ser acessado foi o 0 - avisar que foi um
+  // null pointer Exception
+  if (addr == 0) {
+    cprintf("error: attempt of accessing address 0x0, process was killed\n");
+    kill(myproc()->pid);
+  }
+  // Se o processo possui paginas compartilhadas, realiza a cópia da memoria
+  // que causou o pagefault (por ser read only)
+  else{
+    // Recupera o Page Table Entry do endereço acima para o processo atual
+    pte_t* pte = walkpgdir(myproc()->pgdir, (void *) addr, 0);
+
+    if(PTE_FLAGS(*pte)&PTE_SH){
+        copyuvm_cow(addr);
+        cprintf("page fault: cowfork\n");
+    } else{
+        cprintf("error: attempt of writing on read-only page, process was killed\n<Paste>");
+        kill(myproc()->pid);
+    }
+  }
+}
+
+uint 
+copyuvm_cow(uint addr)
+{
+   uint pa;
+   pte_t *pte;
+   char *mem;
+
+   pte = walkpgdir(myproc()->pgdir, (void *) addr, 0);
+   pa = PTE_ADDR(*pte);
+
+   acquire(&sharelock);
+   // Se pagina está sendo compartilhada
+   if (getCountPPN(pa) > 1) {
+      if ((mem = kalloc()) == 0)
+         goto bad;
+      memmove(mem, (char*)P2V(pa), PGSIZE);
+      *pte &= 0xFFF;
+      *pte &= ~PTE_SH;
+      *pte |= V2P(mem) | PTE_W;
+      decCountPPN(pa);
+   } else {
+      *pte |= PTE_W;
+      *pte &= ~PTE_SH;
+   }
+   release(&sharelock);
+   
+   flshtlb();
+   return 1;
+
+bad:
+   return 0;
+}
+
+int
+deallocuvm_cow(pde_t* pgdir, uint oldsz, uint newsz)
+{
+  pte_t *pte;
+  uint a, pa;
+
+  if(newsz >= oldsz)
+    return oldsz;
+  
+  a = PGROUNDUP(newsz);
+  acquire(&sharelock);
+  for(; a < oldsz; a += PGSIZE){
+     pte = walkpgdir(pgdir, (char*)a, 0);
+     if(!pte)
+       a += (NPTENTRIES - 1) * PGSIZE;
+     else if((*pte & PTE_P) != 0) {
+       pa = PTE_ADDR(*pte);
+       if (pa == 0)
+          panic("kfree");
+       if (getCountPPN(pa) > 1)
+          decCountPPN(pa);
+       else {
+          char *v = P2V(pa);
+          kfree(v);
+          decCountPPN(pa);
+       }
+       *pte = 0;
+     }
+   }
+   release(&sharelock);
+   return newsz;
+}
+
+void
+freevm_cow(pde_t *pgdir)
+{
+  uint i;
+  if(pgdir == 0)
+    panic("freevm: no pgdir");
+  deallocuvm_cow(pgdir, KERNBASE, 0);
+  for(i = 0; i < NPDENTRIES; i++){
+     if(pgdir[i] &  PTE_P){
+        char *v = P2V(PTE_ADDR(pgdir[i]));
+        kfree(v);
+     }
+  }
+  kfree((char*)pgdir);
+}

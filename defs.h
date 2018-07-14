@@ -101,6 +101,7 @@ void            pipeclose(struct pipe*, int);
 int             piperead(struct pipe*, char*, int);
 int             pipewrite(struct pipe*, char*, int);
 
+
 //PAGEBREAK: 16
 // proc.c
 int             cpuid(void);
@@ -182,8 +183,14 @@ void            freevm(pde_t*);
 void            inituvm(pde_t*, char*, uint);
 int             loaduvm(pde_t*, char*, struct inode*, uint, uint, uint);
 pde_t*          copyuvm(pde_t*, uint);
+pde_t*		share_cow(pde_t*, uint);
 void 		handle_pgflt(void);
-pde_t*		copyuvm_cow(pde_t*, uint);
+uint		copyuvm_cow(uint);
+void 		sharetableinit(void);
+int 		getCountPPN(uint);
+void 		incCountPPN(uint);
+void 		decCountPPN(uint);
+void 		freevm_cow(pde_t*);
 void 		flshtlb(void);
 void            switchuvm(struct proc*);
 void            switchkvm(void);
